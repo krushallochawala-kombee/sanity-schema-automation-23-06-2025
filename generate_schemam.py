@@ -1,4 +1,3 @@
-
 import os
 import re
 import sys
@@ -18,9 +17,7 @@ from json_repair import loads as json_repair_loads
 
 # --- ⚙️ 1. CONFIGURATION ---
 load_dotenv()
-FIGMA_API_KEY = os.getenv(
-    "FIGMA_API_KEY"
-)
+FIGMA_API_KEY = os.getenv("FIGMA_API_KEY")
 FIGMA_FILE_KEY = os.getenv("FIGMA_FILE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -259,6 +256,10 @@ def phase_two_generate_schema_code(
     prompt = f"""
 You are an expert Sanity.io schema generator. Your most important task is to create CONCISE and FOCUSED TypeScript schema code. 
 
+### **CRITICAL: SCHEMA TYPE REQUIREMENT**
+This schema MUST be of type: **'{classification}'**
+Set the 'type' property in your defineType call to exactly: '{classification}'
+
 ### **CRITICAL: MINIMAL FIELD APPROACH**
 - **Create ONLY essential content fields** - avoid over-engineering
 - **Focus on actual content**, not visual styling or layout elements  
@@ -365,7 +366,7 @@ preview: {{
 
 ---
 **Your Task:**
-Generate a MINIMAL, focused TypeScript schema for **`{schema_name}`** with ONLY essential content fields.
+Generate a MINIMAL, focused TypeScript schema for **`{schema_name}`** of type **'{classification}'** with ONLY essential content fields.
 
 **Figma Structure to Analyze:**
 ```json
@@ -373,7 +374,7 @@ Generate a MINIMAL, focused TypeScript schema for **`{schema_name}`** with ONLY 
 ```
 {special_instructions}
 
-**Focus on the CONTENT, not the visual design. Keep it simple and essential.**
+**REMEMBER: The schema type MUST be '{classification}'. Focus on the CONTENT, not the visual design. Keep it simple and essential.**
 
 Output ONLY the raw TypeScript code. Do not wrap it in markdown backticks or add any explanation.
 """
@@ -401,7 +402,9 @@ Output ONLY the raw TypeScript code. Do not wrap it in markdown backticks or add
 
 
 # --- NEW: Comprehensive Correction Function ---
-def correct_generated_code(code: str, all_valid_names: Set[str]) -> str:
+def correct_generated_code(
+    code: str, all_valid_names: Set[str], expected_type: str = None
+) -> str:
     """
     Applies a series of corrections to the AI-generated code to fix common, predictable errors.
     """
@@ -422,6 +425,20 @@ def correct_generated_code(code: str, all_valid_names: Set[str]) -> str:
     if re.search(r";```\w*", code):
         code = re.sub(r";```\w*\s*", "", code)
         corrections_applied.append("removed stray markdown syntax")
+
+    # Correction 0.5: Fix incorrect schema type (CRITICAL FIX for the main issue)
+    if expected_type:
+        # Find current type declaration
+        type_pattern = r"type:\s*['\"]([^'\"]+)['\"]"
+        type_match = re.search(type_pattern, code)
+        if type_match:
+            current_type = type_match.group(1)
+            if current_type != expected_type:
+                # Replace the type with the expected type
+                code = re.sub(type_pattern, f"type: '{expected_type}'", code)
+                corrections_applied.append(
+                    f"schema type: '{current_type}' → '{expected_type}'"
+                )
 
     # Correction 1: Fix incorrect validation function typing, e.g., (Rule: Rule) -> (Rule)
     validation_pattern = r"\(Rule:\s*[A-Za-z_][A-Za-z0-9_]*\)"
@@ -834,8 +851,10 @@ def main():
     corrected_schemas = []
     for schema in all_schema_data:
         logging.info(f"  -> Correcting {schema['name']}...")
-        # --- MODIFIED: Using the new, more powerful correction function
-        corrected_code = correct_generated_code(schema["code"], all_valid_names)
+        # --- MODIFIED: Using the new, more powerful correction function with expected type
+        corrected_code = correct_generated_code(
+            schema["code"], all_valid_names, schema["type"]
+        )
 
         # Validate the corrected code for any remaining issues
         issues = validate_generated_code(corrected_code, schema["name"])
