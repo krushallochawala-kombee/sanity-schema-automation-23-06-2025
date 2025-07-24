@@ -1,7 +1,8 @@
 import {defineConfig} from 'sanity'
 import {structureTool} from 'sanity/structure'
 import {internationalizedArray} from 'sanity-plugin-internationalized-array'
-import {schemaTypes} from './schemaTypes/index'
+import {schemaTypes} from './schemaTypes1/index'
+import {visionTool} from '@sanity/vision'
 
 const SUPPORTED_LOCALES = [
   {id: 'en', title: 'English'},
@@ -17,10 +18,11 @@ export default defineConfig({
 
   plugins: [
     structureTool(),
+    visionTool(),
     internationalizedArray({
       languages: SUPPORTED_LOCALES,
       defaultLanguages: ['en'],
-      fieldTypes: ['string', 'text'],
+      fieldTypes: ['string', 'text', 'image', 'url', 'file', 'slug'],
     }),
   ],
 
