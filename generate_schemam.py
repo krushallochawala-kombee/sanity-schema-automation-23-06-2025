@@ -56,6 +56,11 @@ def setup_logging():
     logging.info(f"Logging configured. Detailed log saved to: {log_file_path}")
 
 
+def to_kebab_case(text: str) -> str:
+    s1 = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", text)
+    return re.sub(r"[-\s]+", "-", s1).strip("-").lower()
+
+
 def to_pascal_case(text: str) -> str:
     return "".join(word.capitalize() for word in re.split(r"[\s_-]+", text))
 
@@ -63,11 +68,6 @@ def to_pascal_case(text: str) -> str:
 def to_camel_case(text: str) -> str:
     pascal = to_pascal_case(text)
     return pascal[0].lower() + pascal[1:] if pascal else ""
-
-
-def to_kebab_case(text: str) -> str:
-    s1 = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", text)
-    return re.sub(r"([A-Z])", r"-\1", s1).lstrip("-").lower()
 
 
 def extract_json_from_response(text: str) -> Optional[dict]:
@@ -174,17 +174,20 @@ def phase_one_architect_plan(sections: List[dict], model) -> Optional[dict]:
 You are a top-tier Sanity.io Lead Architect. Analyze the lightweight JSON representation of a Figma design and create a high-level, scalable, and DRY schema plan.
 
 **Architectural Rules:**
-1.  **Documents vs. Objects:** `documents` are for queryable data collections (e.g., `post`, `page`, `siteSettings`). `objects` are for structural components used on pages (e.g., `heroSection`, `ctaButton`).
-2.  **The Grid Rule:** When you see a "structure" with repeating children of the same name (e.g., a "Team" section with multiple "Team Member" children), define a `document` for the underlying data (e.g., `teamMember`) and an `object` for the page section (e.g., `teamSection`) that will hold an array of `references` to those documents.
-3.  **Global Content Rule:** If you infer a 'Header' or 'Footer', plan a `siteSettings` document. Also plan for `headerSettings` and `footerSettings` objects (or documents if they are very complex), which will be referenced by `siteSettings`.
-4.  **CRITICAL NAMING:** All names in your output MUST be in EXACT camelCase format (e.g., "metricsSection", "companyLogo", "heroSection").
-5.  **Always include a `page` document.**
+1.  **Documents vs. Objects:** `documents` are for queryable data collections (e.g., `post`, `page`, `siteSettings`, `header`, `footer`). `objects` are for structural components used on pages (e.g., `heroSection`, `ctaButton`).
+2.  **Header and Footer Rule (CRITICAL):** If you see 'Header' or 'Footer' sections in the Figma design, they MUST be created as `documents` (not objects). These will be referenced by `siteSettings`.
+3.  **The Grid Rule:** When you see a "structure" with repeating children of the same name (e.g., a "Team" section with multiple "Team Member" children), define a `document` for the underlying data (e.g., `teamMember`) and an `object` for the page section (e.g., `teamSection`) that will hold an array of `references` to those documents.
+4.  **Global Content Rule:** Always plan a `siteSettings` document. If header or footer sections are detected, create separate `header` and `footer` documents that will be referenced by `siteSettings`.
+5.  **CRITICAL NAMING:** All names in your output MUST be in EXACT camelCase format (e.g., "metricsSection", "companyLogo", "heroSection", "header", "footer").
+6.  **Always include a `page` document.**
 
 **Figma JSON Structure:**
 {json.dumps(sections_summary, indent=2)}
 
 **Your Output:**
 Return ONLY a valid JSON object with `documents` and `objects` keys. The values for these keys must be arrays of camelCase schema names. Do not include a 'blocks' key.
+
+**Remember: Header and Footer MUST be documents if they exist in the design.**
 """
     logging.debug(
         f"\n--- PHASE 1: PROMPT SENT TO AI ---\n{prompt}\n---------------------------------"
@@ -199,15 +202,56 @@ Return ONLY a valid JSON object with `documents` and `objects` keys. The values 
             raise ValueError("Phase 1 response did not contain valid JSON.")
 
         # Ensure all keys exist and normalize names to proper camelCase
-        # --- MODIFIED: Simplified to just documents and objects
         for category in ["documents", "objects"]:
             plan.setdefault(category, [])
             plan[category] = sorted(
                 list(set([to_camel_case(name) for name in plan[category]]))
             )
+
+        # Deduplicate siteSettings variants (critical fix)
+        sitesettings_variants = [
+            "siteSettings",
+            "siteConfig",
+            "globalSettings",
+            "settings",
+        ]
+        sitesettings_found = [
+            name
+            for name in plan["documents"]
+            if any(variant.lower() == name.lower() for variant in sitesettings_variants)
+        ]
+        if sitesettings_found:
+            # Remove all variants and add only "siteSettings"
+            for variant in sitesettings_found:
+                if variant in plan["documents"]:
+                    plan["documents"].remove(variant)
+            plan["documents"].append("siteSettings")
+
+        # Ensure essential documents exist
         if "page" not in plan["documents"]:
             plan["documents"].append("page")
-            plan["documents"].sort()
+        if "siteSettings" not in plan["documents"]:
+            plan["documents"].append("siteSettings")
+
+        # Check if header/footer sections exist in Figma and ensure they're documents
+        section_names = [to_camel_case(section["name"]) for section in sections]
+        for section_name in section_names:
+            if "header" in section_name.lower():
+                if "header" not in plan["documents"]:
+                    plan["documents"].append("header")
+                # Remove from objects if it was incorrectly placed there
+                if "header" in plan["objects"]:
+                    plan["objects"].remove("header")
+            elif "footer" in section_name.lower():
+                if "footer" not in plan["documents"]:
+                    plan["documents"].append("footer")
+                # Remove from objects if it was incorrectly placed there
+                if "footer" in plan["objects"]:
+                    plan["objects"].remove("footer")
+
+        # Sort final lists
+        plan["documents"].sort()
+        plan["objects"].sort()
 
         logging.info(f"✅ PHASE 1: Architectural plan received.")
         logging.debug(f"Plan details: {json.dumps(plan, indent=2)}")
@@ -227,9 +271,7 @@ def phase_two_generate_schema_code(
     all_objects = plan.get("objects", [])
     all_documents = plan.get("documents", [])
     page_builder_objects = [
-        obj
-        for obj in all_objects
-        if obj not in ["siteSettings", "headerSettings", "footerSettings"]
+        obj for obj in all_objects if obj not in ["siteSettings", "header", "footer"]
     ]
 
     relevant_section_json = next(
@@ -250,7 +292,7 @@ def phase_two_generate_schema_code(
     if schema_name == "page":
         special_instructions = f"**SPECIAL INSTRUCTION FOR 'page':** This document MUST contain a `pageBuilder` field of type `array`. The `of` property for this array should be an array of objects, where each object has a `type` referencing one of the page sections from this list: {page_builder_objects}."
     elif schema_name == "siteSettings":
-        special_instructions = "**SPECIAL INSTRUCTION FOR 'siteSettings':** This document must contain a `header` field of type `reference` to `headerSettings`, and a `footer` field of type `reference` to `footerSettings`."
+        special_instructions = "**SPECIAL INSTRUCTION FOR 'siteSettings':** This document must contain a `header` field of type `reference` to `header` document, and a `footer` field of type `reference` to `footer` document."
 
     # --- MODIFIED: Enhanced prompt with specific fixes for the identified issues ---
     prompt = f"""
@@ -285,7 +327,13 @@ When referencing other schemas in arrays, always include the 'type:' property:
 - **Correct:** `of: [{{type: 'navigationitem'}}]`
 - **INCORRECT:** `of: [{{'navigationitem'}}]`
 
-### **Rule 3c: Multiple Items of Same Type in Arrays - Use Unique Names (CRITICAL)**
+### **Rule 3c: NO Mixed Primitive/Object Types in Arrays (CRITICAL SANITY RULE)**
+NEVER mix primitive types (url, string, number) with object types (reference, object) in the same array:
+- **INCORRECT:** `of: [{{type: 'url'}}, {{type: 'reference'}}]` ❌ WILL BREAK SANITY
+- **Correct:** `of: [{{type: 'object', fields: [{{name: 'url', type: 'url'}}]}}, {{type: 'reference'}}]`
+- **Rule:** If you need url + reference in same array, wrap url in an object structure
+
+### **Rule 3d: Multiple Items of Same Type in Arrays - Use Unique Names (CRITICAL)**
 When an array contains multiple items of the same type, each must have a unique `name`:
 - **Correct:** 
   ```
@@ -573,6 +621,19 @@ def correct_generated_code(
             f"simplified verbose field names: {', '.join(simplified_names[:3])}{'...' if len(simplified_names) > 3 else ''}"
         )
 
+    # Correction 8: Fix mixed primitive/object types in arrays (CRITICAL SANITY FIX)
+    mixed_array_pattern = r'of:\s*\[\s*\{[^}]*type:\s*[\'"]url[\'"][^}]*\}[^}]*\{[^}]*type:\s*[\'"]reference[\'"]'
+    if re.search(mixed_array_pattern, code, re.DOTALL):
+        # Fix url type by wrapping it in object structure
+        url_object_fix = r'(\s*\{\s*type:\s*[\'"])url([\'"][^}]*name:\s*[\'"]([^\'\"]+)[\'"][^}]*title:\s*[\'"]([^\'\"]+)[\'"][^}]*)\},'
+        code = re.sub(
+            url_object_fix,
+            r'\1object\2fields: [defineField({name: "url", title: "URL", type: "url", validation: (Rule) => Rule.required()})],},',
+            code,
+            flags=re.DOTALL,
+        )
+        corrections_applied.append("fixed mixed primitive/object types in arrays")
+
     # Log all corrections applied
     if corrections_applied:
         logging.info(
@@ -685,6 +746,13 @@ def validate_generated_code(code: str, schema_name: str) -> List[str]:
                 "⚠️  Found verbose field names - consider simpler naming (e.g., 'title', 'description', 'image')"
             )
             break  # Only show this warning once
+
+    # Check for mixed primitive/object types in arrays (critical Sanity rule)
+    mixed_array_pattern = r'of:\s*\[\s*\{[^}]*type:\s*[\'"](?:url|string|number|boolean)[\'"][^}]*\}[^}]*\{[^}]*type:\s*[\'"](?:reference|object)[\'"]'
+    if re.search(mixed_array_pattern, code, re.DOTALL):
+        issues.append(
+            "❌ Found mixed primitive/object types in array - will break Sanity Studio"
+        )
 
     if issues:
         logging.warning(f"  ⚠️  Validation issues found in '{schema_name}':")

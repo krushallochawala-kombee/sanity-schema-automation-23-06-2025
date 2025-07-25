@@ -13,8 +13,8 @@ export default defineConfig({
   name: 'default',
   title: 'schema-automation-23-06-25',
 
-  projectId: 'szpg7yxe',
-  dataset: 'production',
+  projectId: process.env.SANITY_PROJECT_ID || '',
+  dataset: process.env.SANITY_DATASET || '',
 
   plugins: [
     structureTool(),
