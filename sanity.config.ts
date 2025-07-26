@@ -8,13 +8,14 @@ const SUPPORTED_LOCALES = [
   {id: 'en', title: 'English'},
   {id: 'hin', title: 'Hindi'},
 ]
+console.log(process.env.SANITY_STUDIO_PROJECT_ID)
 
 export default defineConfig({
   name: 'default',
   title: 'schema-automation-23-06-25',
 
-  projectId: process.env.SANITY_PROJECT_ID || '',
-  dataset: process.env.SANITY_DATASET || '',
+  projectId: process.env.SANITY_STUDIO_PROJECT_ID || '',
+  dataset: process.env.SANITY_STUDIO_DATASET || '',
 
   plugins: [
     structureTool(),
